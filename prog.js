@@ -1,18 +1,22 @@
-/*
+    /*
   Discord CLI(ent) - by 4thebadwoofsky 2017
-  Nicht Vervielfältigen oder rm -rf / auf ihrem System!!
+  Nicht Vervielfaeltigen oder rm -rf / auf ihrem System!!
 */
-
+ 
 var fs = require("fs");
+var shell = require("shelljs");
 var Discord = require("discord.io");
 var blessed = require("blessed");
 var contrib = require("blessed-contrib");
-var DClientData = { autorun:true };
-var Translator = {
+var DClientData = { autorun:true, messageCacheLimit:null, };
+var Translator = JSON.parse(fs.readFileSync("lang/de.json"));
+/*{
   friends: '{red-fg}Freunde{/red-fg}',
   directMessages: '{cyan-fg}Direct-Messages{/cyan-fg}',
   debugLogger: '{red-fg}Debug Logger{/red-fg}',
   settings: '{red-fg}Einstellungen{/red-fg}',
+  exit: '{red-fg}Beenden{/white-fg}',
+  purgeDB: '{red-fg}Datenbank PURGEn{/red-fg}',
   log: {
     Main: {
       RegisterServer: '{red-fg}RegisterServer{/red-fg}',
@@ -24,6 +28,10 @@ var Translator = {
     },
   },
 };
+fs.writeFile("lang/de.json",JSON.stringify(Translator),function(err) {
+  if (err) Logger.Log("Translator",["FS-Error",err]);
+});*/
+
 
 DClientData.token = fs.readFileSync("discord.token",{encoding:"utf-8"});
 DClientData.token = DClientData.token.substring(0,59);
@@ -32,15 +40,19 @@ if(DClientData.token == "") {
   console.log("No Discord Token present");
   return;
 }
-function includeFile(file) {
-  eval(fs.readFileSync(file+".inc.js",{encoding:"utf-8"}));
-}
+/* Application */
+var Application = {
+  Shutdown: function() {
+    DBInterface.Shutdown();
+    DClient.setPresence({game: {name:""}});
+    process.exit(0);
+  }
+};
 /* discord.io initalisieren */
 var DClient = new Discord.Client(DClientData);
 /* Screen initalisieren */
-var screen = blessed.screen({
-  dump: "app.log",
-  title: "Discord-CLI{red-fg}ent{/red-fg}",
+var Display = blessed.screen({
+  title: "Discord-CLIent",
   resizeTimeout: 300,
   dockBorders: true,
   cursor: {
@@ -48,23 +60,25 @@ var screen = blessed.screen({
     shape: "line",
     blink: true,
     color: null
-  },
+  }
 });
 /* Logger */
 var Logger = {
   Log: function(module,txt){
     PaneManager.Globals.logger.log("[" + module + "] ",txt);
     fs.appendFile('prog.log',"[" + module + "] " + txt + "\n");
-    //screen.render();
-  },
+  }
 };
 /* Pane Manager */
 var PaneManager = {
   panes: {},
   Globals: {
     dmchat: {},
+    srvchat: {},
+    ActiveDMChat: null,
+    ActiveDMChatUser: null
   },
-  Init: function() {  
+  Init: function() {
     /* Panes */
     // /* Loading */
     PaneManager.Create("loading",function(pane){
@@ -84,22 +98,22 @@ var PaneManager = {
           bg: 'default',
           border: {
 	    fg: 'default',
-	    bg: 'default',
+	    bg: 'default'
           },
           cell: {
 	    bg: 'gray',
 	    selected: {
-	      bg: 'blue',
+	      bg: 'blue'
 	    }
           },
           header: {
-	    bg:'orange',
+	    bg:'orange'
           },
         },
         width: 'shrunken',
         height: '100%-4',
         top: 2,
-        left: 10,
+        left: 0,
         tags: true,
         invertSelected: false,
         scrollbar: {
@@ -113,7 +127,7 @@ var PaneManager = {
         } 
       });
       //You have 0 Friends
-      PaneManager.Globals.friendList.setData([['Username' + (' '.repeat(screen.width-105)),'Status','Aktionen','ID']]);
+      PaneManager.Globals.friendList.setData([['Username' + (' '.repeat(Display.width-105)),'Status','Aktionen','ID']]);
       //Update DM ChannelChat
       PaneManager.Globals.friendList.on('select', function(item, select) {
         var itemTxt = item.getContent();
@@ -132,7 +146,28 @@ var PaneManager = {
     },null);
     // /* Settings */
     PaneManager.Create("settings",function(pane){
-      
+      var ResetDBBtn = blessed.button({
+        parent: pane,
+        top: 2,
+        left: 2,
+        width: 30,
+        height: 3,
+        border: 'line',
+        tags: true,
+        keys: true,
+        mouse: true,
+        content: Translator.purgeDB
+      });
+      ResetDBBtn.on("press",function() {
+        Logger.Log("SYSTEM","Resetting Database [prog.db]");
+        DBInterface.db.run("DELETE FROM users;", function() {
+          Logger.Log("SYSTEM","|-> Cleaned 'users'");
+          DBInterface.db.run("DELETE FROM directmessages;", function() {
+            Logger.Log("SYSTEM","|-> Cleaned 'directemessages'");
+            Application.Shutdown();
+          });
+        });
+      });
     },null);
     // /* Debugger */
     PaneManager.Create("debugger",function(pane){
@@ -166,14 +201,13 @@ var PaneManager = {
     },null);
     // /* DM-Chat */
     PaneManager.Create("dmchat",function(pane,subid,args) {
-      Logger.Log("PaneManager","Creating Debugger SubObj => subid:"+subid);
-      //+ " channelid:" + getDMChannel(subid));
+      Logger.Log("PaneManager","Creating DMChannelChat SubObj => subid:"+subid);
       PaneManager.Globals.dmchat[subid] = {};
       PaneManager.Globals.dmchat[subid].chat = blessed.log({
         parent: pane,
         top: 0,
         left: 0,
-        width: screen.width - 32,
+        width: Display.width - 36,
         height: '100%-3',
         border: 'line',
         tags: true,
@@ -195,16 +229,15 @@ var PaneManager = {
         parent:pane,
         border:'line',
         style:{
-          bg:'green',
+          bg:'green'
         },
         height:3,
         left: 0,
-        width:screen.width-42,
+        width:Display.width-36,
         bottom:0,
         tags:true,
         keys:true,
-        mouse:true,
-        /* inputOnFocus:true, */
+        mouse:true
       });
       PaneManager.Globals.dmchat[subid].sendBtn = blessed.button({
         parent:pane,
@@ -214,12 +247,12 @@ var PaneManager = {
         border: 'line',
         style: {
           fg: 'red',
-          bg: 'blue',
+          bg: 'blue'
         },
         height:3,
-        left: screen.width-42, 
+        left: Display.width-36, 
         width:10,
-        bottom:0,
+        bottom:0
       });
       PaneManager.Globals.dmchat[subid].sendBtn.click = function () {
         var inputFeld = PaneManager.Globals.dmchat[subid].inputText;
@@ -229,7 +262,7 @@ var PaneManager = {
           return;
         var msgPckg = {
           to:subid,
-          message:message,
+          message:message
         };
         DClient.sendMessage(msgPckg);
       };
@@ -238,8 +271,14 @@ var PaneManager = {
         if (from == DClient.id){
           PaneManager.Globals.dmchat[subid].chat.log("[" + DClient.username  +"]>" + msg);
         } else {
-          if (from == dmTarget)
-            PaneManager.Globals.dmchat[subid].chat.log("[" + UserManager.GetInfo(dmTarget).username + "]>" + msg);
+          if (from == dmTarget) {
+            var dmTargetO = UserManager.GetInfo(dmTarget);
+            if (dmTargetO == undefined || dmTargetO.username == undefined) {
+              Logger.Log("PaneManager-DMChat","DMChat cant load UserInfoObject for '" + dmTarget + "'");
+              return false;
+            }
+            PaneManager.Globals.dmchat[subid].chat.log("[" + dmTargetO.username + "]>" + msg);
+          }
         }
       }
       PaneManager.Globals.dmchat[subid].sendBtn.on("press",PaneManager.Globals.dmchat[subid].sendBtn.click);
@@ -249,39 +288,195 @@ var PaneManager = {
           return false;
         }
       });
-    }, function(userID,paneID) {
-         Logger.Log("PaneManager","DMChat ArgCallback Parameters =>" + userID);
-         var channelId = DMChannelManager.GetChannel(userID);
-         if (PaneManager.Globals.dmchat[channelId] == undefined) {
-           Logger.Log("PaneManager","PaneManager.dmchat["+channelid+" doesnt exists(args callback)");
-           return;
-         }
-         PaneManager.Globals.dmchat[channelId].channelId = channelId;
-         Logger.Log("PaneManager",Object.keys(PaneManager.panes));
-         if(userID === true) {
-           PaneManager.panes[paneID].pane.show();
-         } else {
-           PaneManager.panes[paneID].pane.hide();
-         }         
-         //if (PaneManager.panes[ "dmchat:" + channelId ].pane == undefined)
-         //log(Object.keys(PaneManager.Globals.dmchat[channelId]));
-       });
+    },function(popup,paneID) {
+        userID = DMChannelManager.GetRecipient(paneID.substring(7));
+        Logger.Log("PaneManager","DMChat ArgCallback Parameters =>" + userID + " | " + paneID);
+        var channelId = DMChannelManager.GetChannel(userID);
+
+        PaneManager.Globals.ActiveDMChat = channelId;
+        PaneManager.Globals.ActiveDMChatUser = userID;                                         
+        if (PaneManager.Globals.dmchat[channelId] == undefined) {
+          Logger.Log("PaneManager","PaneManager.dmchat["+channelid+" doesnt exists(args callback)");
+          return;
+        }
+        PaneManager.Globals.dmchat[channelId].channelId = channelId;
+        Logger.Log("PaneManager",Object.keys(PaneManager.panes));
+        if (PaneManager.Globals.dmchat[channelId].lastMessages == undefined){
+          DClient.getMessages({
+            channelID:channelId
+          },function(err,msgs){
+              Logger.Log("PaneManager",msgs);
+              //PaneManager.Globals.dmchat[subid].ChatMsg(chan,from,msgs);
+              for (var i=0;i < Object.keys(msgs).length;i++){
+                var msg = msgs[Object.keys(msgs)[i]];
+                var dmChannelUserId = DMChannelManager.GetRecipient(msg.channel_id);
+                if(dmChannelUserId === false){
+                  Logger.Log("Main","{red-fg}No DM-Channel Recipient found for " + msg.channel_id + "{/red-fg}");
+                } else {
+                  if (PaneManager.Globals.dmchat[msg.channel_id] != undefined)
+                    PaneManager.Globals.dmchat[msg.channel_id].ChatMsg(dmChannelUserId,msg.author.id, (msg.content) && (msg.content) || (msg.type));
+                }
+                Display.render();
+              }
+              PaneManager.Globals.dmchat[channelId].lastMessages = 42;
+            });
+        }
+        if(popup === true) {
+          PaneManager.panes[paneID].pane.show();
+        } else {
+          PaneManager.panes[paneID].pane.hide();
+        }         
+        //if (PaneManager.panes[ "dmchat:" + channelId ].pane == undefined)
+        //log(Object.keys(PaneManager.Globals.dmchat[channelId]));
+      });
+
+    // /* Server-Chat */
+    PaneManager.Create("srvchat",function(pane,subid,args) {
+      Logger.Log("PaneManager","Creating ServerChannelChat SubObj => subid:"+subid);
+      PaneManager.Globals.srvchat[subid] = {};
+      PaneManager.Globals.srvchat[subid].chat = blessed.log({
+        parent: pane,
+        top: 0,
+        left: 0,
+        width: Display.width - 36,
+        height: '100%-3',
+        border: 'line',
+        tags: true,
+        keys: true,
+        vi: true,
+        mouse: true,
+        scrollback: 100,
+        scrollbar: {
+          ch: ' ',
+          track: {
+	    bg: 'yellow'
+          },
+          style: {
+	    inverse: true
+          }
+        }
+      });
+      PaneManager.Globals.srvchat[subid].inputText = blessed.textarea({
+        parent:pane,
+        border:'line',
+        style:{
+          bg:'green'
+        },
+        height:3,
+        left: 0,
+        width:Display.width-36,
+        bottom:0,
+        tags:true,
+        keys:true,
+        mouse:true
+      });
+      PaneManager.Globals.srvchat[subid].sendBtn = blessed.button({
+        parent:pane,
+        content:'Senden',
+        mouse:true,
+        keys:true,
+        border: 'line',
+        style: {
+          fg: 'red',
+          bg: 'blue'
+        },
+        height:3,
+        left: Display.width-36, 
+        width:10,
+        bottom:0
+      });
+      PaneManager.Globals.srvchat[subid].sendBtn.click = function () {
+        var inputFeld = PaneManager.Globals.srvchat[subid].inputText;
+        var message = inputFeld.getValue();
+        inputFeld.clearInput();
+        if(message.length < 1)
+          return;
+        var msgPckg = {
+          to:subid,
+          message:message
+        };
+        DClient.sendMessage(msgPckg);
+      };
+      PaneManager.Globals.srvchat[subid].ChatMsg = function(chan,from,msg) {
+        var dmTarget = SVChannelManager.GetRecipient(subid);
+        if (from == DClient.id){
+          PaneManager.Globals.srvchat[subid].chat.log("[" + DClient.username  +"]>" + msg);
+        } else {
+          if (from == dmTarget) {
+            var dmTargetO = UserManager.GetInfo(dmTarget);
+            if (dmTargetO == undefined || dmTargetO.username == undefined) {
+              Logger.Log("PaneManager-DMChat","DMChat cant load UserInfoObject for '" + dmTarget + "'");
+              return false;
+            }
+            PaneManager.Globals.srvchat[subid].chat.log("[" + dmTargetO.username + "]>" + msg);
+          }
+        }
+      }
+      PaneManager.Globals.srvchat[subid].sendBtn.on("press",PaneManager.Globals.srvchat[subid].sendBtn.click);
+      PaneManager.Globals.srvchat[subid].inputText.on("keypress",function(ch,key) {
+        if (key.name === "return") {
+          PaneManager.Globals.srvchat[subid].sendBtn.click();
+          return false;
+        }
+      });
+    },function(popup,paneID) {
+        userID = DMChannelManager.GetRecipient(paneID.substring(7));
+        Logger.Log("PaneManager","DMChat ArgCallback Parameters =>" + userID + " | " + paneID);
+        var channelId = DMChannelManager.GetChannel(userID);
+
+        PaneManager.Globals.ActiveDMChat = channelId;
+        PaneManager.Globals.ActiveDMChatUser = userID;                                         
+        if (PaneManager.Globals.dmchat[channelId] == undefined) {
+          Logger.Log("PaneManager","PaneManager.dmchat["+channelid+" doesnt exists(args callback)");
+          return;
+        }
+        PaneManager.Globals.dmchat[channelId].channelId = channelId;
+        Logger.Log("PaneManager",Object.keys(PaneManager.panes));
+        if (PaneManager.Globals.dmchat[channelId].lastMessages == undefined){
+          DClient.getMessages({
+            channelID:channelId
+          },function(err,msgs){
+              Logger.Log("PaneManager",msgs);
+              //PaneManager.Globals.dmchat[subid].ChatMsg(chan,from,msgs);
+              for (var i=0;i < Object.keys(msgs).length;i++){
+                var msg = msgs[Object.keys(msgs)[i]];
+                var dmChannelUserId = DMChannelManager.GetRecipient(msg.channel_id);
+                if(dmChannelUserId === false){
+                  Logger.Log("Main","{red-fg}No DM-Channel Recipient found for " + msg.channel_id + "{/red-fg}");
+                } else {
+                  if (PaneManager.Globals.dmchat[msg.channel_id] != undefined)
+                    PaneManager.Globals.dmchat[msg.channel_id].ChatMsg(dmChannelUserId,msg.author.id, (msg.content) && (msg.content) || (msg.type));
+                }
+                Display.render();
+              }
+              PaneManager.Globals.dmchat[channelId].lastMessages = 42;
+            });
+        }
+        if(popup === true) {
+          PaneManager.panes[paneID].pane.show();
+        } else {
+          PaneManager.panes[paneID].pane.hide();
+        }         
+        //if (PaneManager.panes[ "dmchat:" + channelId ].pane == undefined)
+        //log(Object.keys(PaneManager.Globals.dmchat[channelId]));
+      });
+
   },
   Create: function(ID,Callback,ArgHandler){
     var obj = {};
     obj.pane = blessed.box({
       top:3,
-      left:31,
-      width:screen.width-21,
+      left:36,
+      width:Display.width-36,
       height:'100%-3',
-      style: {bg:'blue'},
+      style: {bg:'blue'}
     });
     obj.ArgHandler = ArgHandler;
     obj.Callback = Callback;
 
     PaneManager.panes[ID] = obj;
     Callback(PaneManager.panes[ID].pane);
-    screen.append(PaneManager.panes[ID].pane);
+    Display.append(PaneManager.panes[ID].pane);
     PaneManager.panes[ID].pane.hide();
   },
   Load: function(ID,args) {
@@ -310,17 +505,17 @@ var PaneManager = {
       var obj = {};
       obj.pane = blessed.box({
         top:3,
-        left:31,
-        width:screen.width-31,
+        left:36,
+        width:Display.width-36,
         height:'100%-3',
-        style: {bg:'magenta'},
+        style: {bg:'magenta'}
         /* border: {type:'line',color:'blue'} */
       });
       obj.ArgHandler = PaneManager.panes[ID].ArgHandler;
-
+      
       PaneManager.panes[ID+":"+SubID] = obj;
       PaneManager.panes[ID].Callback(PaneManager.panes[ID+":"+SubID].pane,SubID,args);
-      screen.append(PaneManager.panes[ID+":"+SubID].pane);
+      Display.append(PaneManager.panes[ID+":"+SubID].pane);
       if(args == false)
         PaneManager.panes[ID+":"+SubID].pane.hide();
     }
@@ -344,13 +539,16 @@ var DBInterface = {
     this.db = new this._sql.Database('prog.db');
     Logger.Log("DBInterface","SQLite3 successfully loaded!");
   },
+  Shutdown: function() {
+    this.db.close();
+  },
   UsersTable: function() {
     this.db.each("SELECT * FROM users", function(err,row) {
       UserManager.InitInfo(row.userID,{ //Copy Data DB=>Memory
         username: row.username,
         discriminator: row.discriminator,
         status: row.status,
-        friend: row.friend,
+        friend: row.friend
       });
     });
   },
@@ -360,48 +558,68 @@ var DBInterface = {
       $username: userData.username,
       $discriminator: userData.discriminator,
       $status: userData.status,
-      $friend: 0,
+      $friend: 0
     });
   }
 };
 DBInterface.Init();
 /* Fokus-Highlighting */
-screen.on('element focus', function(cur, old) {
-  if (cur == PaneManager.Globals.Logger && PaneManager.IsVisible("debugger")) {
-    //Dem Logger kein Fokus geben wenn er nicht sichtbar ist
-    PaneManager.Load("friends");
-    return;
-  }
-  /*if (old == PaneManager.Globals.dmchat.inputText) {
-    PaneManager.Globals.dmchat.inputText.submit();
-  }*/
+Display.on('element focus', function(cur, old) {
   if (old.border)
     old.style.border.fg = 'default';
   if (cur.border)
     cur.style.border.fg = 'red';
-  //screen.render();
 });
+var ScreenshotManager = {
+  LastScreenshot: null
+};
+
 /* Fokus */
-screen.on("keypress",function(ch,key) {
-  if (key.name === "LDLAL") {
-    Logger.Log("Main","[Screenshot]");
-    return true;
-    //screen.screenshot(0,0);
-  }
-  if (key.name === "tab") {
-    /*if (PaneManager.Globals.dmchat.inputText.focused == true)
+Display.on("keypress",function(ch,key) {
+  if(key.meta == false) {
+    if (key.name === "tab") {
+      /*if (PaneManager.Globals.dmchat.inputText.focused == true)
       PaneManager.Globals.dmchat.inputText.cancel();*/
-    return key.shift ?
-      screen.focusPrevious() :
-      screen.focusNext();
-  }
-  if (key.name === "escape") {
-    return process.exit(0);
-  }
-  if (key.name === "z") {
-    //return refreshServers();
-    //log(PaneManager.Globals.dmchat);
-    return true;
+      return key.shift ?
+        Display.focusPrevious() :
+        Display.focusNext();
+    }
+  }else {
+    if (key.name === "escape") {
+      return Application.Shutdown();
+    }
+    Logger.Log("Meta",[ch,key]);
+    if (key.name === "s") {
+      if (key.shift == false) {
+        var dNow = new Date();
+        var timeNow = dNow.getFullYear() + '.' + dNow.getDate() + '.' + dNow.getMonth() + '_' + dNow.getHours() + '.' + dNow.getMinutes() + "." + dNow.getSeconds();
+        var screenFile = timeNow + ".scr";
+        fs.writeFile(screenFile,Display.screenshot(),function(err) {
+          if (err) Logger.Log("Screenshot",["FS-Error",err]);
+        });
+        ScreenshotManager.LastScreenshot = screenFile;
+
+        Logger.Log("Meta","[Screenshot] Saved to file " + screenFile);
+      } else {
+        Logger.Log("Meta", "[Screenshot] Sending file " + ScreenshotManager.LastScreenshot + " to UserID=>" + PaneManager.Globals.ActiveDMChatUser);
+        DClient.uploadFile({
+          to: PaneManager.Globals.ActiveDMChatUser,
+          message: "Screenshot from discord.io",
+          file: "./" + ScreenshotManager.LastScreenshot
+        },function(error,response){
+          if(error)
+            Logger.Log("Screenshot",["uploadFile failed",error]);
+          if(response)
+            Logger.Log("Screenshot",["uploadFile success",response]);
+        });
+      }
+      return true;
+    }
+    if (key.name === "F12") {
+      Logger.Log("Meta","F12 Key pressed!!");
+      //return refreshServers();
+      return true;
+    }
   }
 });
 var BaseLayout = {
@@ -423,7 +641,7 @@ var BaseLayout = {
       align: 'center'
     });
     this.titleBarPrefix = this.titleBar.content;
-    screen.append(blessed.line({
+    Display.append(blessed.line({
       orientation: 'horizontal',
       top: 1,
       left: 0,
@@ -432,7 +650,7 @@ var BaseLayout = {
     /* Page Bar */
     this.pageBar = blessed.text({
       top: 2,
-      left: 31,
+      left: 36,
       width: '100%',
       content: '',
       style: {
@@ -440,35 +658,36 @@ var BaseLayout = {
       },
       // bg: blessed.colors.match('#0000ff'),
       align: 'center',
-      tags: true,
+      tags: true
     });
-    screen.append(this.pageBar);
-    screen.append(this.titleBar);
+    Display.append(this.pageBar);
+    Display.append(this.titleBar);
   },
-  InitSelector: function(){
+  InitSelector: function() {
     uiChatSelector.DATA = {
       extended: true,
       name: "Discord",
       children: {}
     };
-    uiChatSelector.DATA.children[Translator.friends] = {pane:"friends",};     //Freunde
-    uiChatSelector.DATA.children[Translator.directMessages] = {children:{},}; //Direct Messages
-    uiChatSelector.DATA.children[Translator.debugLogger] = {pane:"debugger",};//Debug Log
-    uiChatSelector.DATA.children[Translator.settings] =  {pane:"settings",};  //Einstellungen
+    uiChatSelector.DATA.children[Translator.friends] = {pane:"friends"};      //Freunde
+    uiChatSelector.DATA.children[Translator.directMessages] = {children:{}};  //Direct Messages
+    uiChatSelector.DATA.children[Translator.debugLogger] = {pane:"debugger"}; //Debug Log
+    uiChatSelector.DATA.children[Translator.settings] =  {pane:"settings"};   //Einstellungen
+    uiChatSelector.DATA.children[Translator.exit] =  {exit:true};   //Beenden
     uiChatSelector.setData(uiChatSelector.DATA);
-    screen.render();
-  },
+    Display.render();
+  }
 };
 /* Page UI */
 var PageManager = {
   currentPage: "",
-  Init: function(){
+  Init: function() {
     this.pageBar.content = "";
   },
-  Get: function(){
+  Get: function() {
     return this.currentPage;
   },
-  Set: function(page){
+  Set: function(page) {
     this.currentPage = page;
     Logger.Log("PaneManager","SetPage => " + this.currentPage);
     if (page == "@debug") {
@@ -476,7 +695,7 @@ var PageManager = {
       PaneManager.Load("debugger",null);
       return;
     }
-    if (page.length >= 3 && page.substring(0,3) == "@dm") { //Direct messages
+    if (page.length >= 3 && page.substring(0,3) == "@dm") {
       var targetId = page.substring(3);
       BaseLayout.pageBar.content = "Direct Messages[" + targetId + "] " + UserManager.GetInfo(DMChannelManager.GetRecipient(targetId)).username;
       PaneManager.LoadSub("dmchat",targetId,true);
@@ -510,7 +729,7 @@ var PageManager = {
       return;
     }
     BaseLayout.pageBar.content = page;
-  },
+  }
 }
 BaseLayout.Init();
 /* Server-Liste */
@@ -523,13 +742,13 @@ var uiChatSelector = contrib.tree({
     bg: 'default',
     border: {
       fg: 'default',
-      bg: 'default',
+      bg: 'default'
     },
     selected: {
-      bg: 'green',
+      bg: 'green'
     }
   },
-  width: 30,
+  width: 35,
   height: '100%-2',
   top: 2,
   left: 1,
@@ -537,22 +756,25 @@ var uiChatSelector = contrib.tree({
   scrollbar: {
     ch: '|',
     track: {
-      bg: 'yellow',
+      bg: 'yellow'
     },
     style: {
-      inverse: true,
+      inverse: true
     }
   },
   template: {
-    lines:false,
-  },
+    lines:false
+  }
 });
-screen.append(uiChatSelector);
+Display.append(uiChatSelector);
 //uiChatSelector.select(0);
 uiChatSelector.on('select', function(node) {
+  if(node.exit === true) {
+    Application.Shutdown();
+  }
   if(node.serverID != undefined) {
     PageManager.Set("/" + node.serverID);
-    screen.render();
+    Display.render();
   }
   if(node.pane != undefined) {
     switch(node.pane) {
@@ -569,7 +791,7 @@ uiChatSelector.on('select', function(node) {
       PageManager.Set("@dm" + node.channel);
       break;
     }
-    screen.render();
+    Display.render();
   }
 });
 /*uiChatSelector.on("keypress",function(ch,key) {
@@ -579,45 +801,51 @@ uiChatSelector.on('select', function(node) {
 });*/
 
 /* Server Managing */
-serverList = {};
-function registerServer(id,data) {
-/*  uiChatSelector.DATA.children['{cyan-fg}Direct-Messages{/cyan-fg}'].children[addy] = {
-    pane:"dm",
-    userId:userid,
-    channel:targetChannel,
-  };
-  uiChatSelector.setData(uiChatSelector.DATA);
-*/
-
-//  uiServerList.insertItem(uiServerList.items.length - 1,data.name);
-//  var itm = uiServerList.getItemIndex(data.name);
-}
-function updateServer(id,data){
-//  uiServerList.setItem(serverList[id].item,data.name);
-}
-function deleteServer(id) {
-//  if (serverList[id]) {
-//    uiServerList.removeItem(serverList[id].item);
-//    serverList[id] = undefined;
-//  }
-}
-function validServer(id) {
-  return id in serverList;
-}
-function refreshServers() {
-  var keys = Object.keys(DClient.servers);
-  for (var i = 0;i < keys.length;i++) {
-    var key = keys[i];
-    var srv = DClient.servers[key];
-    if (validServer(key) == false) {
-      registerServer(key,srv);
-      Logger.Log("Main",Translator.log.Main.RegisterServer + "(" + key + ")");
-    } else {
-      updateServer(key,srv);
-      Logger.Log("Main",Translator.log.Main.UpdateServer + "(" + key + ")");
+var ServerManager = {
+  Servers: {},
+  Register: function(id,data) {
+    var srvId = data.id;
+    var srvData = {
+      pane:"srv",
+      server:srvId,
+      children:{}
+    };
+    var channels = data.channels;
+    for (var i = 0;i < Object.keys(channels).length;i++) {
+      var channel = channels[Object.keys(channels)[i]];
+      if (channel.type == "text") {
+        srvData.children[ "#" + channel.name ] = {
+          server:channel.guild_id,
+          channel:channel.id,
+          topic:channel.topic
+        }
+      }
     }
+
+    uiChatSelector.DATA.children['{yellow-fg}' + data.name  + '{/yellow-fg}'] = srvData;
+    uiChatSelector.setData(uiChatSelector.DATA);
+  },
+  Update: function() {
+    
+  },
+  Refresh: function() {
+    var keys = Object.keys(DClient.servers);
+    for (var i = 0;i < keys.length;i++) {
+      var key = keys[i];
+      var srv = DClient.servers[key];
+      if (this.Valid(key) == false) {
+        this.Register(key,srv);
+        Logger.Log("Main",Translator.log.Main.RegisterServer + "(" + key + ")");
+      } else {
+        this.Update(key,srv);
+        Logger.Log("Main",Translator.log.Main.UpdateServer + "(" + key + ")");
+      }
+    }
+  },
+  Valid: function(id) {
+    return id in this.Servers;
   }
-}
+};
 /* User Managing */
 var UserManager = {
   Users: {},
@@ -667,8 +895,13 @@ var UserManager = {
       DBInterface.TableUsers(userID,userData);
   },
   GetInfo: function(userID) {
-    if (this.Fetch(userID) == undefined)
+    if (this.Fetch(userID) == undefined) {
+      if (DClient.users[userID] == undefined){
+        Logger.Log("UserManager","GetInfo, Preparing new SetInfo but DClient$UserData is undefined for userID='" + userID + "'");
+        return false;
+      }
       this.SetInfo(userID,DClient.users[userID]);
+    }
     return this.Fetch(userID);
   },
   Refresh: function() {
@@ -718,6 +951,60 @@ var DMChannelManager = {
       }
     }    
   },
+  GetChannelData: function(userID) {
+    return this.getDMs()[this.GetChannel(userID)];
+  },
+  GetRecipient: function(dmChannelID) {
+    if (this.ChannelToUserID[ dmChannelID ] != undefined) {
+      return this.ChannelToUserID[ dmChannelID ];
+    }
+    Logger.Log("DMChannelManager","[RunOnce] Generate DMRecipient for '" + dmChannelID + "'");
+    var dms = this.GetDMs();
+    var channel = dms[ dmChannelID ];
+    if (channel == undefined) {
+      Logger.Log("DMChannelManager","|-> DMChannel("+dmChannelID+") is undefined");    
+      return false;
+    }
+    if (channel.type == "text") {
+      this.ChannelToUserID[ dmChannelID ] = channel.recipient.id;
+      return channel.recipient.id;
+    }
+    return false;
+  },
+};
+// Server implementation
+var SVChannelManager = {
+  SVChannels: {},
+  UserToChannelID: {},
+  ChannelToUserID: {},
+  Init: function() {
+    
+  },
+  GetChannels: function() {
+    return DClient.directMessages;
+  },
+  GetChannel: function(userID) {
+    if (this.UserToChannelID[ userID ] != undefined) {
+      return this.UserToChannelID[ userID ];
+    }
+    Logger.Log("DMChannelManager","[RunOnce] Generate DMChannelID for '" + userID + "'");
+    var dms = this.GetChannels();    
+    for(var i = 0
+;i < Object.keys(dms).length;i++){
+      var dmChannelID = Object.keys(dms)[ i ];
+      var channel = dms[ dmChannelID ];
+      if (channel != undefined && channel.type == "text") {
+        var recieverID = channel.recipient.id;
+        if (recieverID == userID){
+          this.UserToChannelID[ userID ] = dmChannelID;
+          return dmChannelID;
+        }
+      }
+    }    
+  },
+  GetChannelData: function(userID) {
+    return this.getDMs()[this.GetChannel(userID)];
+  },
   GetRecipient: function(dmChannelID) {
     if (this.ChannelToUserID[ dmChannelID ] != undefined) {
       return this.ChannelToUserID[ dmChannelID ];
@@ -749,8 +1036,7 @@ function updateDMChat(userid,addy,focus) {
     channel:targetChannel,
   };
   uiChatSelector.setData(uiChatSelector.DATA);
-  Logger.Log("Main",uiChatSelector.data);
-  screen.render();
+  Display.render();
 }
 function putChannelMsg(channelID,userID,message) {
   var dmChannelUserId = DMChannelManager.GetRecipient(channelID);
@@ -760,33 +1046,36 @@ function putChannelMsg(channelID,userID,message) {
     if (PaneManager.Globals.dmchat[channelID] == undefined) {
       Logger.Log("Main","{red-fg}RECV MSG EMPTY CHANNEL; CREATE CHANNEL " + dmChannelUserId + "{/red-fg}");
       PaneManager.LoadSub("dmchat",channelID,false);
-      var user = UserManager.GetInfo(dmChannelUserId);  
-      updateDMChat(dmChannelUserId,user.username + "#" + user.discriminator,false);
+      var user = UserManager.GetInfo(dmChannelUserId);
+      Logger.Log("Main",user);
+      if (user != undefined && user.username != undefined) {
+        updateDMChat(dmChannelUserId,user.username + "#" + user.discriminator,false);
+      }
     }
     //if (PaneManager.Globals.dmchat[channelID] != undefined)
     PaneManager.Globals.dmchat[channelID].ChatMsg(dmChannelUserId,userID,message);
   }
-  screen.render();
-}
-
+  Display.render();
+};
 DMChannelManager.Init();
+SVChannelManager.Init();
+
 // Init
 BaseLayout.InitSelector();
 DClient.on("ready",function(event) {
   BaseLayout.titleBar.content = BaseLayout.titleBarPrefix + " [" + DClient.username + "#" + DClient.discriminator + "/Online]";
 
   if (PageManager.Get() == "@loading") {
-    PageManager.Set("@me");
+    PageManager.Set("@debug");
   }
   DClient.setPresence({
     game: {
-      name:"@Discord-CLI",
-    },
+      name:"@Discord-CLI"
+    }
   });
   uiChatSelector.focus();
-  screen.render();
-
-  refreshServers();
+  Display.render();
+  ServerManager.Refresh();
   DClient.getAllUsers(UserManager.Refresh);
 });
 // Auto-Reconnect
@@ -805,13 +1094,40 @@ DClient.on("presence",function(user,userID,status,game){
 */
 });
 // Nachrichten empfangen
-DClient.on("message",function(user,userID,channelID,message) {
+function DClientMessageHook(user,userID,channelID,message,event) {
+  if (!DClient.users[userID]){
+    DClient.users[userID] = newUser(event.d.author); //Fixing discord.io Cache Bug
+    UserManager.SetInfo(userID,DClient.users[userID]);
+  }
   putChannelMsg(channelID,userID,message);
+}
+DClient.on("any",function(event) {
+  var _data = event.d;
+  if(event.t == "MESSAGE_CREATE") {
+    DClientMessageHook(_data.author.username, _data.author.id, _data.channel_id, _data.content, event);
+    return;
+  }
+  if(event.t == "MESSAGE_CREATE" || event.t == "USER_CPDATE" || event.t == "MESSAGE_UPDATE" || event.t == "CHANNEL_CREATE" || event.t == "CHANNEL_UPDATE" || event.t == "CHANNEL_DELETE"  )
+    Logger.Log("DClient",event);
 });
+function copyKeys(from, to, omit) {
+	if (!omit) omit = [];
+	for (var key in from) {
+		if (omit.indexOf(key) > -1) continue;
+		to[key] = from[key];
+	}
+}
+function newUser(data) {
+  Logger.Log("User-Constructor",data);
+  var d = {};
+  copyKeys(data, d);
+  d.bot = d.bot || false;
+  return d;
+}
 
 DBInterface.UsersTable(); // User aus DB laden
 BaseLayout.titleBar.content = BaseLayout.titleBarPrefix + " : Verbinde...";
 PageManager.Set("@loading");
 
 /* Render */
-screen.render();
+Display.render();
